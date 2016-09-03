@@ -1,6 +1,6 @@
 //We always have to include the library
 #include "LedControl.h"
-#include "ledmatrixv2.h"
+#include "ledmatrixclock.h"
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
