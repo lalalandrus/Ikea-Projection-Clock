@@ -149,6 +149,31 @@ void updateTime()
   }
 }
 
+void updateTimev2()
+{
+  // cool animation
+  static int crude_ani = 0;
+  static unsigned long timeout = 0;
+  if (timeout < millis())
+  {
+    timeout = millis() + 1000/(28-minute()*28/60);
+    if (crude_ani>=(28- minute()*28/60))
+    {
+      timeout += 1000;
+      crude_ani = 0;
+    }
+    else
+      crude_ani++;
+  }
+    
+  for (int i = 0; i < 8 ; i++)
+  {
+    lc.setColumn(0,7-i,(HOURS[hour()%12][i] | MINUTES[minute()*28/60][i] | ANIMATION[28-crude_ani][i]));
+   // lc.setColumn(0,7-i,(HOURS[hour()%12][i] | MINUTES[minute()*28/60][i] | (crude_ani%2 == 0 ? RING[0][i] : ANIMATION[28-crude_ani/2][i])));
+    yield();
+  }
+}
+
 int dayofweek(int y, int m, int d)  /* 1 <= m <= 12,  y > 1752 (in the U.K.) */
   {
       static int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
