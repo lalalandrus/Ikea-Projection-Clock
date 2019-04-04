@@ -1,56 +1,32 @@
 #include <WiFiUdp.h>
 #include <ESP8266WiFi.h>
 #include "LedControl.h"
-#include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
+// #include <ESPAsyncTCP.h>
+// #include <ESPAsyncWebServer.h>
+#include <ESP8266WebServer.h>
+#include <simpleDSTadjust.h>
 
-const char* SSID_SET = "****************";
-const char* PASSWORD = "****************";
 const char* ota_hostname = "matrixclock";
-const uint16_t APORT = 8266;
-const unsigned int LOCAL_PORT = 2390;      // local port to listen for UDP packets
-const char* NTP_SERVER_NAME = "time.nist.gov";
-const int NTP_PACKET_SIZE = 48; // NTP time stamp is in the first 48 bytes of the message
-const byte SENDBUFFER[] = {
-  0b11100011,          // LI, Version, Mode.
-  0x0,                 // Stratum unspecified.
-  0x6,                 // Polling interval
-  0xEC,                // Clock precision.
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x31, 0x4E, 0x31, 0x34,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0,
-  0x0, 0x0, 0x0, 0x0}; // Reference ...
-const unsigned long REFRESH_RATE = 2500000;
 unsigned long timeout = 0;
+char brightness = 0x00;
+const unsigned long REFRESH_RATE = 10*60*1000;
+long lastDownloadUpdate = millis();
 
+#define UTC_OFFSET -8
+struct dstRule StartRule = {"PDT", Second, Sun, Mar, 2, 3600}; // Pacific Daylight time = UTC/GMT -7 hours
+struct dstRule EndRule = {"PST", First, Sun, Nov, 1, 0};       // Pacific Standard time = UTC/GMT -8 hour
+// change for different NTP (time servers)
+#define NTP_SERVERS "us.pool.ntp.org", "time.nist.gov", "pool.ntp.org"
 
-AsyncWebServer    server1 ( 80 );
-// ESP8266WebServer server(80); 
+// August 1st, 2018
+#define NTP_MIN_VALID_EPOCH 1533081600
+
+simpleDSTadjust dstAdjusted(StartRule, EndRule);
+
+// AsyncWebServer    server1 ( 80 );
+ ESP8266WebServer server(80); 
 // WiFiServer TelnetServer(APORT);
 // WiFiClient Telnet;
-
-/* Don't hardwire the IP address or we won't get the benefits of the pool.
- *  Lookup the IP address for the host name instead */
-//IPAddress timeServer(129, 6, 15, 28); // time.nist.gov NTP server
-IPAddress timeServerIP; // time.nist.gov NTP server address
-byte packetBuffer[ NTP_PACKET_SIZE]; //buffer to hold incoming and outgoing packets
-const int BASE_TIMEZONE = -8;     // PST
-// format is month, first/second/third/fouth/last, day of week (sunday = 1)
-const int DST_START[]={4,1,1};
-const int DST_END[]={10,5,1};
-int timeZone = 0;
-const int LEAP_ORDINAL[] = {0,31,60,91,121,152,182,213,244,274,305,335};
-const int ORDINAL[] = {0,31,59,90,120,151,181,212,243,273,304,334};
-
-const int LEAP_MONTH_DAYS[] = {0,31,28,31,30,31,30,31,31,30,31,30,31};
-const int MONTH_DAYS[] = {0,31,29,31,30,31,30,31,31,30,31,30,31};
 
 WiFiUDP udp;
 
@@ -754,8 +730,7 @@ const char MINUTES[28][8] = {
   }
 };
 
-/*
- * const char MINUTES[28][8] = {
+const char ANIMATION[28][8] = {
   { // 
     0B00001000,
     0B00000000,
@@ -1036,7 +1011,7 @@ const char MINUTES[28][8] = {
     0B00000000
   }
 };
- */
+
 const char RING[2][8] = {
     { 
   0B11111111,
