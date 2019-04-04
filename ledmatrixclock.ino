@@ -1,55 +1,27 @@
 //We always have to include the library
 #include "LedControl.h"
-#include "ledmatrixclock.h"
+#include "ledmatrixv22.h"
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-#include <TimeLib.h>
-#include <ESPAsyncTCP.h>
-#include <ESPAsyncWebServer.h>
+#include <ESP8266WebServer.h>
+
+// Helps with connecting to internet
+#include <WiFiManager.h>
 
 // time_t getNtpTime()
-void sendNTPpacket()
-{
-  WiFi.hostByName(NTP_SERVER_NAME, timeServerIP);  
-  // while (udp.parsePacket() > 0) ; // discard any previously received packets
-  for (int i = 0 ; i < 5 ; i++) { // 5 retries.
-    if (udp.beginPacket(timeServerIP, 123)) {
-      udp.write(SENDBUFFER, NTP_PACKET_SIZE);
-      udp.endPacket();
-    }
-    uint32_t beginWait = millis();
+void getNtpTime() {
+  time_t now;
+  
+  int i = 0;
+  configTime(UTC_OFFSET * 3600, 0, NTP_SERVERS);
+  while((now = time(nullptr)) < NTP_MIN_VALID_EPOCH) {
+    delay(500);
+    i++;
+    if (i > 60)
+      break;
   }
-}
-
-
-time_t getNtpTime()
-{
-  udp.begin(LOCAL_PORT);
-  while (udp.parsePacket() > 0) yield(); // discard any previously received packets
-  // Serial.println("Transmit NTP Request");
-  sendNTPpacket();
-  uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
-    int size = udp.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-      // Serial.println("Receive NTP Response");
-      udp.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      udp.stopAll();
-      return secsSince1900 - 2208988800UL + timeZone * SECS_PER_HOUR;
-    }
-    yield();
-  }
-  // Serial.println("No NTP Response :-(");
-  udp.stopAll();
-  return 0; // return 0 if unable to get the time
 }
 
 void setupDisplay() 
@@ -60,7 +32,7 @@ void setupDisplay()
    */
   lc.shutdown(0,false);
   /* Set the brightness to a medium values */
-  lc.setIntensity(0,0x0F);
+  lc.setIntensity(0,brightness);
   /* and clear the display */
   lc.clearDisplay(0);
 }
@@ -78,17 +50,26 @@ void setup()
 {
   setupDisplay();
 
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(SSID_SET, PASSWORD);
-  while (WiFi.waitForConnectResult() != WL_CONNECTED) {
-    delay(5000);
-    ESP.restart();
-  }
+  //WiFiManager
+  //Local intialization. Once its business is done, there is no need to keep it around
+  WiFiManager wifiManager;
+  // Uncomment for testing wifi manager
+  //wifiManager.resetSettings();
+
+  //or use this for auto generated name ESP + ChipID
+
+  String hostname(ota_hostname);
+  
+  hostname = hostname + "-" + String(ESP.getChipId(), HEX);
+  WiFi.hostname(hostname);
+  wifiManager.setConfigPortalTimeout(120);
+  wifiManager.autoConnect();
+
   Serial.begin(115200);
   Serial.println("Ready");
   Serial.print("IP address: ");
   Serial.println(WiFi.localIP());
-
+  
   setupOTA();
   ArduinoOTA.begin();
   // TelnetServer.begin();
@@ -96,34 +77,21 @@ void setup()
 
   MDNS.addService("http","tcp",80);
   
-  setupHTTPServer(server1);
-  setSyncProvider(getNtpTime);
-  setSyncInterval(5);
-
-  while (timeStatus()==timeNotSet) 
-  {
-     setTime(getNtpTime());
-     yield();
-  }
-  setDST();
-  setSyncInterval(3600);
-
-  
+  setupHTTPServer();
+  getNtpTime();
 }
 
 void updateTimeWords() 
 {
   // Adjust 2.5 minutes = 150 seconds forward
   // So at 12:03 it already reads "five past 12"
-
-  tmElements_t temp_time;
-
-  breakTime(now()+150,temp_time);
-
-
-  int disp_sec = temp_time.Second%2;
-  int disp_min = temp_time.Minute/5;
-  int disp_hrs = temp_time.Hour;
+  char *dstAbbrev;
+  time_t now = dstAdjusted.time(&dstAbbrev);
+  struct tm * timeinfo = localtime (&now);
+  
+  int disp_sec = timeinfo->tm_sec%2;
+  int disp_min = timeinfo->tm_min/5;
+  int disp_hrs = timeinfo->tm_hour;
 
   if(disp_min >= MIN_OFFSET) 
     ++disp_hrs %= 12;
@@ -132,32 +100,28 @@ void updateTimeWords()
 
   for (int i = 0; i < 8 ; i++)
   {
-    lc.setColumn(0,i,(HOURS_WORDS[disp_hrs][i] | MINUTES_WORDS[disp_min][i] | BLINKY[disp_sec][i]));
+    lc.setColumn(0,7-i,(HOURS_WORDS[disp_hrs][i] | MINUTES_WORDS[disp_min][i] | BLINKY[disp_sec][i]));
   }
 }
-void updateTime() 
+
+void updateTimev2() 
 {
   // Adjust 2.5 minutes = 150 seconds forward
   // So at 12:03 it already reads "five past 12"
-  static int crude_pwm = 0;
-
-  crude_pwm = (crude_pwm + 1) % 10 ;
-  for (int i = 0; i < 8 ; i++)
-  {
-    lc.setColumn(0,i,(HOURS[hour()%12][i] | MINUTES[minute()*28/60][i] | (crude_pwm == 0 ? RING[0][i] : RING[1][i])));
-    yield();
-  }
-}
-
-void updateTimev2()
-{
-  // cool animation
+  char *dstAbbrev;
+  time_t now = dstAdjusted.time(&dstAbbrev);
+  struct tm * timeinfo = localtime (&now);
+  
+  int disp_sec = timeinfo->tm_sec;
+  int disp_min = timeinfo->tm_min;
+  int disp_hrs = timeinfo->tm_hour;
+  
   static int crude_ani = 0;
   static unsigned long timeout = 0;
   if (timeout < millis())
   {
-    timeout = millis() + 1000/(28-minute()*28/60);
-    if (crude_ani>=(28- minute()*28/60))
+    timeout = millis() + 1000/(28-disp_min*28/60);
+    if (crude_ani>=(28- disp_min*28/60))
     {
       timeout += 1000;
       crude_ani = 0;
@@ -168,125 +132,86 @@ void updateTimev2()
     
   for (int i = 0; i < 8 ; i++)
   {
-    lc.setColumn(0,7-i,(HOURS[hour()%12][i] | MINUTES[minute()*28/60][i] | ANIMATION[28-crude_ani][i]));
+    lc.setColumn(0,7-i,(HOURS[disp_hrs%12][i] | MINUTES[disp_min*28/60][i] | ANIMATION[28-crude_ani][i]));
    // lc.setColumn(0,7-i,(HOURS[hour()%12][i] | MINUTES[minute()*28/60][i] | (crude_ani%2 == 0 ? RING[0][i] : ANIMATION[28-crude_ani/2][i])));
     yield();
   }
 }
 
-int dayofweek(int y, int m, int d)  /* 1 <= m <= 12,  y > 1752 (in the U.K.) */
-  {
-      static int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
-      y -= m < 3;
-      return (y + y/4 - y/100 + y/400 + t[m-1] + d) % 7 + 1;
-  }
 
-int calcDateOffset (int dst_month, int dst_nth, int dst_day)
-{
-  int temp = (7 + dst_day - dayofweek(year(),dst_month,0))%7;
 
-  int month_days[13];
-  if ((year()%4) == 0)
-    memcpy(month_days,LEAP_MONTH_DAYS, sizeof(month_days));
-  else
-    memcpy(month_days,MONTH_DAYS, sizeof(month_days));
-  
-  for ( int i=1; i < dst_nth; i++)
-  {
-     if (temp < (month_days[dst_month]-6))
-      temp += 7;
-  }
+const char webpage[] = "change screen <cr>" 
+"<form method='POST' action='/'><input type='hidden' name='change' value='1'><input type='submit' value='Change'></form>"
+"<form method='POST' action='/'><input type='range' value='8' min='0' max='16' name='Brightness'><input type='submit' value='Send'></form>";
 
-  return temp;
-}
-
-void setDST() 
-{
-  int ordinal[13];
-  
-  if ((year()%4) == 0)
-    memcpy(ordinal, LEAP_ORDINAL, sizeof(ordinal));
-  else
-    memcpy(ordinal,ORDINAL, sizeof(ordinal));
-    
-  int start_day = ordinal[DST_START[0]] + calcDateOffset(DST_START[0], DST_START[1], DST_START[2]);
-  int end_day = ordinal[DST_END[0]] + calcDateOffset(DST_END[0], DST_END[1], DST_END[2]);
-  int curr_day = ordinal[month()] + day();
-
-  if (curr_day >= start_day and curr_day < end_day)
-    timeZone = BASE_TIMEZONE + 1;
-  else
-    timeZone = BASE_TIMEZONE;
-
-  setTime(getNtpTime());
-}
-
-void setupHTTPServer(AsyncWebServer &httpd)
+void setupHTTPServer()
 {
 
   // Simple Firmware Update Form
-  httpd.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/html", "change screen <cr> <form method='POST' action='/' enctype='text/plain'><input type='submit' value='Change'></form>");
+  server.on("/", HTTP_GET, [](){
+    server.send(200, "text/html", webpage);
   });
-  httpd.on ( "/", HTTP_POST, [] ( AsyncWebServerRequest * request )
-    { request->send(200, "text/html", "change screen <cr> <form method='POST' action='/' enctype='text/plain'><input type='submit' value='Change'></form>");
-      display_words = !display_words ; } );
+  server.on ( "/", HTTP_POST, [] ()
+    { if (server.hasArg("change"))
+         display_words = !display_words;
+      if (server.hasArg("Brightness"))
+      {
+         lc.setIntensity(0,server.arg("Brightness").toInt());
+      } 
+    server.send(200, "text/html", webpage);} );
     
-  
-  httpd.on("/update", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(200, "text/html", "version 1.0 <cr><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>");
-  });
-  httpd.on("/update", HTTP_POST, [](AsyncWebServerRequest *request){
-    AsyncWebServerResponse *response = request->beginResponse(200, "text/plain", !Update.hasError()?"OK":"FAIL");
-    response->addHeader("Connection", "close");
-    request->send(response);
-    if (!Update.hasError())
+  server.on("/update", HTTP_GET, [](){
+      server.sendHeader("Connection", "close");
+      server.sendHeader("Access-Control-Allow-Origin", "*");
+      server.send(200, "text/html", "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>");
+    });
+  server.on("/update", HTTP_POST, [](){
+      server.sendHeader("Connection", "close");
+      server.sendHeader("Access-Control-Allow-Origin", "*");
+      server.send(200, "text/plain", (Update.hasError())?"FAIL":"OK");
       ESP.restart();
-        
-  },[](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-    if(!index){
-      Serial.printf("Update Start: %s\n", filename.c_str());
-      Update.runAsync(true);
-      if(!Update.begin((ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000)){
-        Update.printError(Serial);
+    },[](){
+      HTTPUpload& upload = server.upload();
+      if(upload.status == UPLOAD_FILE_START){
+        Serial.setDebugOutput(true);
+        WiFiUDP::stopAll();
+        Serial.printf("Update: %s\n", upload.filename.c_str());
+        uint32_t maxSketchSpace = (ESP.getFreeSketchSpace() - 0x1000) & 0xFFFFF000;
+        if(!Update.begin(maxSketchSpace)){//start with max available size
+          Update.printError(Serial);
+        }
+      } else if(upload.status == UPLOAD_FILE_WRITE){
+        if(Update.write(upload.buf, upload.currentSize) != upload.currentSize){
+          Update.printError(Serial);
+        }
+      } else if(upload.status == UPLOAD_FILE_END){
+        if(Update.end(true)){ //true to set the size to the current progress
+          Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+        } else {
+          Update.printError(Serial);
+        }
+        Serial.setDebugOutput(false);
       }
-    }
-    if(!Update.hasError()){
-      if(Update.write(data, len) != len){
-        Update.printError(Serial);
-      }
-    }
-    if(final){
-      if(Update.end(true)){
-        Serial.printf("Update Success: %uB\n", index+len);
-      } else {
-        Update.printError(Serial);
-      }
-    }
-  });
+      yield();
+    });
 
-  httpd.begin() ;
-}
-
-void onRequest(AsyncWebServerRequest *request){
-  //Handle Unknown Request
-  request->send(404);
+  server.begin() ;
 }
 
 void loop() { 
   ArduinoOTA.handle();
 
-  if (display_words==true && (hour() > 8 || hour() < 3 ))
+  if (display_words)
     updateTimeWords();
   else
-    updateTime();
+    updateTimev2();
 
-    
-  if ( hour() == 2 and minute() == 0 and second() == 0)
-    setDST();
+  if (millis() - lastDownloadUpdate > REFRESH_RATE) {
+    getNtpTime();
+    lastDownloadUpdate = millis();
+  }
 
-  yield();
-    
+  server.handleClient();    
 }
 
 
